@@ -1,0 +1,270 @@
+api_key: null
+allowed_origins:
+- '*'
+systems:
+- id: candidate-engagement-system
+  name: Candidate Engagement System
+  description: An intelligent conversational suite for onboarding candidates via voice,
+    providing personalized career coaching, and matching users with relevant job opportunities.
+  topology: orchestrator
+  agents:
+  - type: writer
+    prompt: You are the Engagement Coordinator. Your job is to route candidate interactions
+      to the correct specialist. Route voice-based profile setup and data extraction
+      tasks to analyst_1. Route general career coaching and interview preparation
+      queries to writer_2. Route specific job search, company research, or matching
+      requests to recruiter_3. If the task is finished, respond with __done__ and
+      the final result.
+    tools: []
+  - type: analyst
+    prompt: You are an Onboarding Data Specialist. Your goal is to parse natural language
+      transcripts from candidate voice notes to extract structured data including
+      career goals, technical skills, and work-life preferences. Use parse_document
+      if supplementary CV data is provided and calculate to weight candidate interests.
+    tools:
+    - parse_document
+    - calculate
+  - type: writer
+    prompt: You are a Professional Career Coach. You provide actionable advice on
+      interview strategies, resume optimization, and professional development. Use
+      a supportive, mentoring tone and reference the candidate's specific history
+      to provide tailored coaching responses.
+    tools:
+    - parse_document
+  - type: recruiter
+    prompt: You are a Job Matching Specialist. Use ashby_fetch_jobs and ashby_resolve_slug
+      to find active roles. Use score_candidate to evaluate the fit between the candidate's
+      profile and open positions. Provide clear rationales for why specific roles
+      are recommended.
+    tools:
+    - ashby_resolve_slug
+    - ashby_fetch_jobs
+    - score_candidate
+    - linkedin_company
+- id: job-spec-intake-system
+  name: Job Specification Intake System
+  description: Extracts and structures job requirements from employer conversations
+    and document uploads using a multi-stage validation pipeline.
+  topology: sequential
+  agents:
+  - type: screener
+    prompt: "You are a job specification expert. Your task is to ingest unstructured\
+      \ data\u2014whether it's an employer briefing transcript or a PDF document\u2014\
+      and extract core recruitment entities. Use the parse_document tool if a file\
+      \ URL is provided to identify hard skills, experience levels, and role-specific\
+      \ requirements."
+    tools:
+    - parse_document
+  - type: analyst
+    prompt: You are a recruitment data analyst. Take the raw entities extracted by
+      the screener and map them to a formal, structured job specification format.
+      Ensure skills are aligned with a standard SkillTaxonomy and calculate whether
+      the experience requirements provided are consistent with the seniority level
+      described.
+    tools:
+    - calculate
+  - type: validator
+    prompt: 'You are the quality gatekeeper. Review the structured job specification
+      to ensure it meets the minimum data requirements: it must have a job title,
+      at least three mandatory skills, and a clear experience range. Call accept_output
+      if the data is ready for the database, or reject_output if critical information
+      is missing.'
+    tools:
+    - accept_output
+    - reject_output
+- id: recruitment-matching-engine
+  name: Recruitment Matching Engine
+  description: Calculates semantic relevance and fit reasoning between candidates
+    and job postings using multi-dimensional analysis.
+  topology: single
+  agents:
+  - type: analyst
+    prompt: You are a senior recruitment analyst specializing in semantic matching.
+      Your task is to ingest candidate profiles and job requirements to determine
+      compatibility. Use the score_candidate tool to generate structured comparisons,
+      focusing on technical skills, industry experience, and leadership qualities.
+      You must provide a 0-100 score and a natural language explanation that references
+      specific strengths and gaps found in the data.
+    tools:
+    - score_candidate
+    - parse_document
+    - calculate
+endpoints:
+- slug: candidate-onboarding-audio
+  description: Extracts structured profile data from candidate voice-to-text onboarding
+    sessions.
+  usage: Called during the initial app setup when a candidate describes their background
+    via the microphone.
+  system_id: candidate-engagement-system
+  contract:
+  - name: transcript
+    type: string
+    description: The raw text generated from the candidate's voice input
+  - name: isMicOn
+    type: boolean
+    description: Status of the microphone during the recording session
+  - name: isActive
+    type: boolean
+    description: Whether the onboarding session is currently active
+  response:
+  - name: extracted_skills
+    type: array
+    description: List of technical and soft skills identified in the speech
+  - name: career_goals
+    type: string
+    description: Summary of the candidate's stated professional aspirations
+  - name: onboarding_status
+    type: string
+    description: Current progress state of the profile completion
+  prompt: 'Analyze the following onboarding transcript: {transcript}. While the mic
+    status is {isMicOn} and session activity is {isActive}, extract all relevant skills
+    and career goals to populate the CandidateProfile table.'
+- slug: candidate-chat-handler
+  description: Provides real-time career coaching and mentorship responses to candidate
+    queries.
+  usage: Triggered when a candidate sends a message in the coaching chat interface.
+  system_id: candidate-engagement-system
+  contract:
+  - name: input
+    type: string
+    description: The candidate's question or message regarding their career
+  response:
+  - name: message
+    type: string
+    description: The AI coach's personalized response
+  - name: suggested_resources
+    type: array
+    description: Links or topics the candidate should explore next
+  prompt: 'As a career coach, address the candidate''s input: ''{input}''. Focus on
+    providing high-quality interview preparation or professional growth advice based
+    on typical industry standards.'
+- slug: api-candidate-chat
+  description: High-level chat endpoint that combines professional advice with active
+    job matching.
+  usage: Main API for the chat interface when candidates ask about specific job openings
+    or market fit.
+  system_id: candidate-engagement-system
+  contract:
+  - name: message
+    type: string
+    description: The candidate's query about jobs or company fit
+  - name: candidate_id
+    type: string
+    description: The unique identifier for the candidate in the database
+  response:
+  - name: response_text
+    type: string
+    description: Natural language response including matching insights
+  - name: recommended_actions
+    type: array
+    description: List of suggested jobs to apply for or companies to research
+  prompt: Evaluate the message '{message}' for candidate {candidate_id}. Cross-reference
+    their profile with active job listings via Ashby and LinkedIn tools to suggest
+    specific opportunities and provide context-aware guidance.
+- slug: employer-briefing-handler
+  description: Processes interactive chat messages from employers during the role
+    briefing phase to update the JobBrief state.
+  usage: Called when an employer sends a message in the onboarding chat interface.
+  system_id: job-spec-intake-system
+  contract:
+  - name: input
+    type: string
+    description: The natural language message sent by the employer in the chat.
+  response:
+  - name: reply
+    type: string
+    description: The AI's conversational response or follow-up question.
+  - name: is_complete
+    type: boolean
+    description: True if the system has gathered enough info to finalize the job brief.
+  - name: extracted_entities
+    type: object
+    description: Key-value pairs of skills and requirements identified so far.
+  prompt: 'Process the employer message: {input}. Analyze if this input provides new
+    details for the JobBrief. If the information is sufficient to build a requirement
+    profile, mark it as complete; otherwise, draft a follow-up question to clarify
+    missing skills or experience levels.'
+- slug: api-employer-briefing
+  description: Batch processes a full meeting transcript or long-form notes into a
+    structured JobRequirement object.
+  usage: Called after an employer completes a briefing call or submits a long-form
+    text description of a role.
+  system_id: job-spec-intake-system
+  contract:
+  - name: transcript
+    type: string
+    description: The full text transcript of the briefing conversation or role description.
+  - name: employer_id
+    type: string
+    description: Unique identifier for the employer organization.
+  response:
+  - name: job_spec
+    type: object
+    description: The fully structured job specification including title, summary,
+      and responsibilities.
+  - name: skills
+    type: array
+    description: List of required technical and soft skills mapped to the SkillTaxonomy.
+  - name: experience_summary
+    type: string
+    description: A concise summary of the ideal candidate's background for employer
+      {employer_id}.
+  prompt: 'Analyze the following transcript: {transcript}. For employer {employer_id},
+    generate a formal JobRequirement record. Distinguish between ''must-have'' and
+    ''nice-to-have'' skills and summarize the required professional experience.'
+- slug: api-parse-resume
+  description: Extracts structured data from uploaded documents, handling both candidate
+    resumes and internal job spec files.
+  usage: Called when a user uploads a PDF or DOCX file to either seed a job requirement
+    or create a candidate profile.
+  system_id: job-spec-intake-system
+  contract:
+  - name: file_url
+    type: string
+    description: The URL of the uploaded document (resume or spec) to be parsed.
+  - name: type
+    type: string
+    description: 'The nature of the file: ''resume'' for candidate data or ''spec''
+      for job requirements.'
+  response:
+  - name: extracted_data
+    type: object
+    description: The raw structured data extracted from the document.
+  - name: skills
+    type: array
+    description: List of skills identified within the document text.
+  - name: vibe_indicators
+    type: array
+    description: Qualitative indicators of cultural fit or work style found in the
+      text.
+  prompt: Use the parse_document tool on {file_url} to extract information as a {type}.
+    Focus on hard skills, tenure at previous companies, and any cultural indicators
+    or 'vibe' signals present in the writing style or self-description.
+- slug: api-match-engine
+  description: Computes a high-precision semantic match score and provides a detailed
+    natural language explanation of the fit between a candidate and a role.
+  usage: Called by the recruiter dashboard when opening a candidate's profile within
+    the context of a specific job opening.
+  system_id: recruitment-matching-engine
+  contract:
+  - name: candidate_id
+    type: string
+    description: The unique identifier for the candidate being evaluated
+  - name: job_id
+    type: string
+    description: The unique identifier for the job requirement/brief
+  response:
+  - name: score
+    type: number
+    description: The final compatibility score ranging from 0 to 100
+  - name: fit_reasoning
+    type: string
+    description: A detailed explanation of why the candidate is or is not a good match
+  - name: analysis_breakdown
+    type: object
+    description: A breakdown of scores across dimensions like technical skills, experience
+      level, and education
+  prompt: Analyze the match between candidate {candidate_id} and job {job_id}. Evaluate
+    the candidate's resume and history against the specific requirements of the job
+    brief. Produce a multi-dimensional score (0-100) and write a comprehensive fit_reasoning
+    narrative that highlights specific alignment points and potential red flags.
